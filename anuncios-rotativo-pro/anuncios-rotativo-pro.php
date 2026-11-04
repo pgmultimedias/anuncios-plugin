@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Anuncios Rotativo Pro
  * Description:       Gestiona banners de anuncios rotativos con CPT, shortcodes, fechas de vencimiento, dimensiones y soporte para AdSense.
- * Version:           1.7.1
+ * Version:           1.7.2
  * Author:            PG Multimedias
  * Author URI:        https://pgmultimedias.com
  * License:           GPL-2.0+
@@ -98,6 +98,62 @@ function arp_seleccionar_anuncio_rotativo( $anuncios_validos, $lugar_id ) {
     
     // Retornar solo el anuncio seleccionado
     return array( $anuncios_validos[ $next_index ] );
+}
+
+// Devuelve los anuncios publicados de un lugar y aplica vigencia/programación en PHP.
+// Evita que un meta_query de fechas deje fuera anuncios con fechas vacías o antiguas.
+function arp_obtener_anuncios_validos($lugar) {
+    if (!is_string($lugar) || trim($lugar) === '') {
+        return array();
+    }
+
+    $anuncios = get_posts(array(
+        'post_type'      => 'anuncio',
+        'post_status'    => 'publish',
+        'posts_per_page' => -1,
+        'fields'         => 'ids',
+        'meta_key'       => '_arp_lugar',
+        'meta_value'     => $lugar,
+        'orderby'        => 'date',
+        'order'          => 'ASC',
+    ));
+
+    $hoy = current_time('Y-m-d');
+    $dia_actual = (int) current_time('N');
+    $hora_actual = current_time('H:i');
+    $validos = array();
+
+    foreach ($anuncios as $anuncio_id) {
+        $fecha_inicio = trim((string) get_post_meta($anuncio_id, '_arp_fecha_inicio', true));
+        $fecha_fin = trim((string) get_post_meta($anuncio_id, '_arp_fecha_vencimiento', true));
+
+        if ($fecha_inicio !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha_inicio) && $fecha_inicio > $hoy) {
+            continue;
+        }
+        if ($fecha_fin !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $fecha_fin) && $fecha_fin < $hoy) {
+            continue;
+        }
+
+        $programacion = get_post_meta($anuncio_id, '_arp_programacion', true);
+        if (is_array($programacion)) {
+            $dias = isset($programacion['dias']) && is_array($programacion['dias'])
+                ? array_map('intval', $programacion['dias'])
+                : array();
+            $hora_inicio = isset($programacion['hora_inicio']) ? trim($programacion['hora_inicio']) : '';
+            $hora_fin = isset($programacion['hora_fin']) ? trim($programacion['hora_fin']) : '';
+
+            // Solo restringir por horario cuando la programación está completa.
+            if (!empty($dias) && $hora_inicio !== '' && $hora_fin !== '') {
+                if (!in_array($dia_actual, $dias, true) || $hora_actual < $hora_inicio || $hora_actual > $hora_fin) {
+                    continue;
+                }
+            }
+        }
+
+        $validos[] = (int) $anuncio_id;
+    }
+
+    return $validos;
 }
 
 // Función helper para obtener el nombre personalizado de un lugar
@@ -1095,47 +1151,7 @@ function arp_shortcode( $atts ) {
     $atts = shortcode_atts( array( 'lugar' => '' ), $atts, 'anuncio_rotativo' );
     if ( empty( $atts['lugar'] ) ) return '';
 
-    $hoy = current_time('Y-m-d');
-    $args = array(
-        'post_type'      => 'anuncio', 'posts_per_page' => -1, 'post_status'    => 'publish',
-        'meta_query'     => array(
-            'relation' => 'AND',
-            array('key' => '_arp_lugar', 'value' => $atts['lugar'], 'compare' => '='),
-            // Las fechas son opcionales: si no se indicaron, el anuncio sigue vigente.
-            array(
-                'relation' => 'OR',
-                array('key' => '_arp_fecha_inicio', 'compare' => 'NOT EXISTS'),
-                array('key' => '_arp_fecha_inicio', 'value' => '', 'compare' => '='),
-                array('key' => '_arp_fecha_inicio', 'value' => $hoy, 'compare' => '<=', 'type' => 'DATE'),
-            ),
-            array(
-                'relation' => 'OR',
-                array('key' => '_arp_fecha_vencimiento', 'compare' => 'NOT EXISTS'),
-                array('key' => '_arp_fecha_vencimiento', 'value' => '', 'compare' => '='),
-                array('key' => '_arp_fecha_vencimiento', 'value' => $hoy, 'compare' => '>=', 'type' => 'DATE'),
-            ),
-        ),
-    );
-    $query = new WP_Query( $args );
-    $anuncios_validos = [];
-
-    if ( $query->have_posts() ) {
-        while ( $query->have_posts() ) {
-            $query->the_post();
-            $post_id = get_the_ID();
-            $programacion = get_post_meta($post_id, '_arp_programacion', true);
-            if (empty($programacion) || (empty($programacion['dias']) && empty($programacion['hora_inicio']))) {
-                $anuncios_validos[] = $post_id;
-                continue;
-            }
-            $dia_actual = (int) current_time('N');
-            $hora_actual = current_time('H:i');
-            if (isset($programacion['dias']) && in_array($dia_actual, $programacion['dias']) && isset($programacion['hora_inicio']) && $hora_actual >= $programacion['hora_inicio'] && isset($programacion['hora_fin']) && $hora_actual <= $programacion['hora_fin']) {
-                $anuncios_validos[] = $post_id;
-            }
-        }
-        wp_reset_postdata();
-    }
+    $anuncios_validos = arp_obtener_anuncios_validos($atts['lugar']);
     
     if ( empty($anuncios_validos) ) return '';
 
@@ -1153,9 +1169,11 @@ function arp_shortcode( $atts ) {
     $style = "style='width: {$ancho}; height: {$alto};'";
     $output = "<div id='{$container_id}' class='arp-container' data-rotation-speed='{$tiempo_rotacion}' {$style}>";
     
-    foreach ($anuncios_validos as $anuncio_id) {
+    foreach ($anuncios_validos as $index => $anuncio_id) {
         $ad_type = get_post_meta($anuncio_id, '_arp_ad_type', true);
-        $output .= "<div class='arp-slide'>";
+        // El primer banner queda visible desde el HTML, incluso si el JavaScript del tema falla.
+        $slide_class = ($index === 0) ? 'arp-slide active' : 'arp-slide';
+        $output .= "<div class='{$slide_class}'>";
         
         if ($ad_type === 'code') {
             $ad_code = get_post_meta($anuncio_id, '_arp_ad_code', true);
@@ -1203,52 +1221,7 @@ function arp_shortcode_sticky( $atts ) {
         $atts['lugar'] = get_option('arp_modo_sticky_lugar', 'lugar_sticky_footer');
     }
     
-    $hoy = current_time('Y-m-d');
-    $args = array(
-        'post_type'      => 'anuncio',
-        'posts_per_page' => -1,
-        'post_status'    => 'publish',
-        'meta_query'     => array(
-            'relation' => 'AND',
-            array('key' => '_arp_lugar', 'value' => $atts['lugar'], 'compare' => '='),
-            // Las fechas son opcionales: si no se indicaron, el anuncio sigue vigente.
-            array(
-                'relation' => 'OR',
-                array('key' => '_arp_fecha_inicio', 'compare' => 'NOT EXISTS'),
-                array('key' => '_arp_fecha_inicio', 'value' => '', 'compare' => '='),
-                array('key' => '_arp_fecha_inicio', 'value' => $hoy, 'compare' => '<=', 'type' => 'DATE'),
-            ),
-            array(
-                'relation' => 'OR',
-                array('key' => '_arp_fecha_vencimiento', 'compare' => 'NOT EXISTS'),
-                array('key' => '_arp_fecha_vencimiento', 'value' => '', 'compare' => '='),
-                array('key' => '_arp_fecha_vencimiento', 'value' => $hoy, 'compare' => '>=', 'type' => 'DATE'),
-            ),
-        ),
-    );
-    
-    $query = new WP_Query($args);
-    $anuncios_validos = [];
-    
-    if ($query->have_posts()) {
-        while ($query->have_posts()) {
-            $query->the_post();
-            $post_id = get_the_ID();
-            $programacion = get_post_meta($post_id, '_arp_programacion', true);
-            if (empty($programacion) || (empty($programacion['dias']) && empty($programacion['hora_inicio']))) {
-                $anuncios_validos[] = $post_id;
-                continue;
-            }
-            $dia_actual = (int) current_time('N');
-            $hora_actual = current_time('H:i');
-            if (isset($programacion['dias']) && in_array($dia_actual, $programacion['dias']) && 
-                isset($programacion['hora_inicio']) && $hora_actual >= $programacion['hora_inicio'] && 
-                isset($programacion['hora_fin']) && $hora_actual <= $programacion['hora_fin']) {
-                $anuncios_validos[] = $post_id;
-            }
-        }
-        wp_reset_postdata();
-    }
+    $anuncios_validos = arp_obtener_anuncios_validos($atts['lugar']);
     
     if (empty($anuncios_validos)) {
         return '';
@@ -1370,52 +1343,7 @@ function arp_implementar_modo_anuncio() {
         $alto = get_option('arp_modo_popup_alto', '400') . 'px';
         
         // Obtener anuncios válidos para el lugar seleccionado (popup)
-        $hoy = current_time('Y-m-d');
-        $args = array(
-            'post_type'      => 'anuncio',
-            'posts_per_page' => -1,
-            'post_status'    => 'publish',
-            'meta_query'     => array(
-                'relation' => 'AND',
-                array('key' => '_arp_lugar', 'value' => $lugar, 'compare' => '='),
-                // Las fechas son opcionales: si no se indicaron, el anuncio sigue vigente.
-                array(
-                    'relation' => 'OR',
-                    array('key' => '_arp_fecha_inicio', 'compare' => 'NOT EXISTS'),
-                    array('key' => '_arp_fecha_inicio', 'value' => '', 'compare' => '='),
-                    array('key' => '_arp_fecha_inicio', 'value' => $hoy, 'compare' => '<=', 'type' => 'DATE'),
-                ),
-                array(
-                    'relation' => 'OR',
-                    array('key' => '_arp_fecha_vencimiento', 'compare' => 'NOT EXISTS'),
-                    array('key' => '_arp_fecha_vencimiento', 'value' => '', 'compare' => '='),
-                    array('key' => '_arp_fecha_vencimiento', 'value' => $hoy, 'compare' => '>=', 'type' => 'DATE'),
-                ),
-            ),
-        );
-        
-        $query = new WP_Query($args);
-        $anuncios_validos = [];
-        
-        if ($query->have_posts()) {
-            while ($query->have_posts()) {
-                $query->the_post();
-                $post_id = get_the_ID();
-                $programacion = get_post_meta($post_id, '_arp_programacion', true);
-                if (empty($programacion) || (empty($programacion['dias']) && empty($programacion['hora_inicio']))) {
-                    $anuncios_validos[] = $post_id;
-                    continue;
-                }
-                $dia_actual = (int) current_time('N');
-                $hora_actual = current_time('H:i');
-                if (isset($programacion['dias']) && in_array($dia_actual, $programacion['dias']) && 
-                    isset($programacion['hora_inicio']) && $hora_actual >= $programacion['hora_inicio'] && 
-                    isset($programacion['hora_fin']) && $hora_actual <= $programacion['hora_fin']) {
-                    $anuncios_validos[] = $post_id;
-                }
-            }
-            wp_reset_postdata();
-        }
+        $anuncios_validos = arp_obtener_anuncios_validos($lugar);
         
         if (!empty($anuncios_validos)) {
             // Aplicar rotación por refresco si está activada
@@ -1455,52 +1383,7 @@ function arp_implementar_modo_anuncio() {
         $alto = get_option('arp_modo_sticky_alto', '100') . 'px';
         
         // Obtener anuncios válidos para el lugar seleccionado (sticky)
-        $hoy = current_time('Y-m-d');
-        $args = array(
-            'post_type'      => 'anuncio',
-            'posts_per_page' => -1,
-            'post_status'    => 'publish',
-            'meta_query'     => array(
-                'relation' => 'AND',
-                array('key' => '_arp_lugar', 'value' => $lugar, 'compare' => '='),
-                // Las fechas son opcionales: si no se indicaron, el anuncio sigue vigente.
-                array(
-                    'relation' => 'OR',
-                    array('key' => '_arp_fecha_inicio', 'compare' => 'NOT EXISTS'),
-                    array('key' => '_arp_fecha_inicio', 'value' => '', 'compare' => '='),
-                    array('key' => '_arp_fecha_inicio', 'value' => $hoy, 'compare' => '<=', 'type' => 'DATE'),
-                ),
-                array(
-                    'relation' => 'OR',
-                    array('key' => '_arp_fecha_vencimiento', 'compare' => 'NOT EXISTS'),
-                    array('key' => '_arp_fecha_vencimiento', 'value' => '', 'compare' => '='),
-                    array('key' => '_arp_fecha_vencimiento', 'value' => $hoy, 'compare' => '>=', 'type' => 'DATE'),
-                ),
-            ),
-        );
-        
-        $query = new WP_Query($args);
-        $anuncios_validos = [];
-        
-        if ($query->have_posts()) {
-            while ($query->have_posts()) {
-                $query->the_post();
-                $post_id = get_the_ID();
-                $programacion = get_post_meta($post_id, '_arp_programacion', true);
-                if (empty($programacion) || (empty($programacion['dias']) && empty($programacion['hora_inicio']))) {
-                    $anuncios_validos[] = $post_id;
-                    continue;
-                }
-                $dia_actual = (int) current_time('N');
-                $hora_actual = current_time('H:i');
-                if (isset($programacion['dias']) && in_array($dia_actual, $programacion['dias']) && 
-                    isset($programacion['hora_inicio']) && $hora_actual >= $programacion['hora_inicio'] && 
-                    isset($programacion['hora_fin']) && $hora_actual <= $programacion['hora_fin']) {
-                    $anuncios_validos[] = $post_id;
-                }
-            }
-            wp_reset_postdata();
-        }
+        $anuncios_validos = arp_obtener_anuncios_validos($lugar);
         
         if (!empty($anuncios_validos)) {
             // Aplicar rotación por refresco si está activada
@@ -1537,52 +1420,7 @@ function arp_implementar_modo_anuncio() {
         $lugar = get_option('arp_modo_interstitial_lugar', 'lugar_interstitial');
         
         // Obtener anuncios válidos para el lugar seleccionado (interstitial)
-        $hoy = current_time('Y-m-d');
-        $args = array(
-            'post_type'      => 'anuncio',
-            'posts_per_page' => -1,
-            'post_status'    => 'publish',
-            'meta_query'     => array(
-                'relation' => 'AND',
-                array('key' => '_arp_lugar', 'value' => $lugar, 'compare' => '='),
-                // Las fechas son opcionales: si no se indicaron, el anuncio sigue vigente.
-                array(
-                    'relation' => 'OR',
-                    array('key' => '_arp_fecha_inicio', 'compare' => 'NOT EXISTS'),
-                    array('key' => '_arp_fecha_inicio', 'value' => '', 'compare' => '='),
-                    array('key' => '_arp_fecha_inicio', 'value' => $hoy, 'compare' => '<=', 'type' => 'DATE'),
-                ),
-                array(
-                    'relation' => 'OR',
-                    array('key' => '_arp_fecha_vencimiento', 'compare' => 'NOT EXISTS'),
-                    array('key' => '_arp_fecha_vencimiento', 'value' => '', 'compare' => '='),
-                    array('key' => '_arp_fecha_vencimiento', 'value' => $hoy, 'compare' => '>=', 'type' => 'DATE'),
-                ),
-            ),
-        );
-        
-        $query = new WP_Query($args);
-        $anuncios_validos = [];
-        
-        if ($query->have_posts()) {
-            while ($query->have_posts()) {
-                $query->the_post();
-                $post_id = get_the_ID();
-                $programacion = get_post_meta($post_id, '_arp_programacion', true);
-                if (empty($programacion) || (empty($programacion['dias']) && empty($programacion['hora_inicio']))) {
-                    $anuncios_validos[] = $post_id;
-                    continue;
-                }
-                $dia_actual = (int) current_time('N');
-                $hora_actual = current_time('H:i');
-                if (isset($programacion['dias']) && in_array($dia_actual, $programacion['dias']) && 
-                    isset($programacion['hora_inicio']) && $hora_actual >= $programacion['hora_inicio'] && 
-                    isset($programacion['hora_fin']) && $hora_actual <= $programacion['hora_fin']) {
-                    $anuncios_validos[] = $post_id;
-                }
-            }
-            wp_reset_postdata();
-        }
+        $anuncios_validos = arp_obtener_anuncios_validos($lugar);
         
         if (!empty($anuncios_validos)) {
             // Aplicar rotación por refresco si está activada
@@ -1650,53 +1488,7 @@ function arp_insertar_anuncio_inarticle($content) {
     $ancho = get_option('arp_modo_inarticle_ancho', '300') . 'px';
     $alto = get_option('arp_modo_inarticle_alto', '250') . 'px';
     
-    // Obtener anuncios válidos para el lugar seleccionado
-    $hoy = current_time('Y-m-d');
-    $args = array(
-        'post_type'      => 'anuncio',
-        'posts_per_page' => -1,
-        'post_status'    => 'publish',
-        'meta_query'     => array(
-            'relation' => 'AND',
-            array('key' => '_arp_lugar', 'value' => $lugar, 'compare' => '='),
-            // Las fechas son opcionales: si no se indicaron, el anuncio sigue vigente.
-            array(
-                'relation' => 'OR',
-                array('key' => '_arp_fecha_inicio', 'compare' => 'NOT EXISTS'),
-                array('key' => '_arp_fecha_inicio', 'value' => '', 'compare' => '='),
-                array('key' => '_arp_fecha_inicio', 'value' => $hoy, 'compare' => '<=', 'type' => 'DATE'),
-            ),
-            array(
-                'relation' => 'OR',
-                array('key' => '_arp_fecha_vencimiento', 'compare' => 'NOT EXISTS'),
-                array('key' => '_arp_fecha_vencimiento', 'value' => '', 'compare' => '='),
-                array('key' => '_arp_fecha_vencimiento', 'value' => $hoy, 'compare' => '>=', 'type' => 'DATE'),
-            ),
-        ),
-    );
-    
-    $query = new WP_Query($args);
-    $anuncios_validos = [];
-    
-    if ($query->have_posts()) {
-        while ($query->have_posts()) {
-            $query->the_post();
-            $post_id = get_the_ID();
-            $programacion = get_post_meta($post_id, '_arp_programacion', true);
-            if (empty($programacion) || (empty($programacion['dias']) && empty($programacion['hora_inicio']))) {
-                $anuncios_validos[] = $post_id;
-                continue;
-            }
-            $dia_actual = (int) current_time('N');
-            $hora_actual = current_time('H:i');
-            if (isset($programacion['dias']) && in_array($dia_actual, $programacion['dias']) && 
-                isset($programacion['hora_inicio']) && $hora_actual >= $programacion['hora_inicio'] && 
-                isset($programacion['hora_fin']) && $hora_actual <= $programacion['hora_fin']) {
-                $anuncios_validos[] = $post_id;
-            }
-        }
-        wp_reset_postdata();
-    }
+    $anuncios_validos = arp_obtener_anuncios_validos($lugar);
     
     if (empty($anuncios_validos)) {
         return $content;
