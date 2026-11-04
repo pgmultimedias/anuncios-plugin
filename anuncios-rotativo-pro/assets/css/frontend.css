@@ -1,0 +1,22 @@
+.arp-container { position: relative; overflow: hidden; display: block; line-height: 0; }
+.arp-container .arp-slide { position: absolute; top: 0; left: 0; width: 100%; height: 100%; opacity: 0; transition: opacity 0.5s ease-in-out; display: flex; align-items: center; justify-content: center; }
+.arp-container .arp-slide.active { opacity: 1; z-index: 1; position: relative; }
+.arp-container .arp-slide img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.arp-container .arp-slide iframe, .arp-container .arp-slide ins { max-width: 100%; max-height: 100%; }
+
+/* Estilos para video */
+.arp-video-container { width: 100%; height: 100%; position: relative; }
+.arp-video-container iframe { width: 100%; height: 100%; border: none; }
+
+/* Estilos para sticky footer */
+.arp-sticky-footer { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); background: white; border-top: 2px solid #ccc; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); z-index: 99997; max-width: 100%; }
+.arp-sticky-footer img { width: 100%; height: 100%; object-fit: contain; }
+
+/* Estilos para intersticial */
+#arp-modointerstitial-overlay { display: none !important; }
+#arp-modointerstitial-overlay.active { display: block !important; }
+
+/* Estilos para in-article */
+.arp-inarticle-ad { margin: 30px auto; text-align: center; max-width: 100%; }
+.arp-inarticle-container { width: 100%; position: relative; overflow: hidden; border: 1px solid #ddd; border-radius: 5px; background: #f9f9f9; }
+.arp-inarticle-slide img { width: 100%; height: 100%; object-fit: contain; }
