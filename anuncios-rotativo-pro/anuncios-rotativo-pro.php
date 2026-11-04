@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Anuncios Rotativo Pro
  * Description:       Gestiona banners de anuncios rotativos con CPT, shortcodes, fechas de vencimiento, dimensiones y soporte para AdSense.
- * Version:           1.7.2
+ * Version:           1.7.3
  * Author:            PG Multimedias
  * Author URI:        https://pgmultimedias.com
  * License:           GPL-2.0+
@@ -154,6 +154,40 @@ function arp_obtener_anuncios_validos($lugar) {
     }
 
     return $validos;
+}
+
+// Activa automáticamente el modo correspondiente cuando hay anuncios en sus lugares especiales.
+function arp_obtener_tipos_modo_anuncio() {
+    $tipos = get_option('arp_modo_anuncio_tipo', array('popup', 'sticky', 'interstitial', 'inarticle'));
+    if (!is_array($tipos)) {
+        $tipos = array($tipos);
+    }
+
+    $lugares_especiales = array(
+        'popup'        => 'lugar_popup',
+        'sticky'       => 'lugar_sticky_footer',
+        'interstitial' => 'lugar_interstitial',
+        'inarticle'    => 'lugar_inarticle',
+    );
+
+    foreach ($lugares_especiales as $tipo => $lugar) {
+        if (!empty(arp_obtener_anuncios_validos($lugar))) {
+            $tipos[] = $tipo;
+        }
+    }
+
+    return array_values(array_unique($tipos));
+}
+
+// Para cada modo, prioriza su lugar dedicado cuando hay anuncios asignados allí.
+function arp_obtener_anuncios_para_modo(&$lugar, $lugar_especial) {
+    $anuncios_especiales = arp_obtener_anuncios_validos($lugar_especial);
+    if (!empty($anuncios_especiales)) {
+        $lugar = $lugar_especial;
+        return $anuncios_especiales;
+    }
+
+    return arp_obtener_anuncios_validos($lugar);
 }
 
 // Función helper para obtener el nombre personalizado de un lugar
@@ -629,8 +663,8 @@ function arp_registrar_opciones() {
     }
     
     // Nueva configuración para modo anuncio
-    register_setting( 'arp_modo_anuncio_grupo', 'arp_modo_anuncio_activado' );
-    register_setting( 'arp_modo_anuncio_grupo', 'arp_modo_anuncio_tipo', array('default' => array('popup')) );
+    register_setting( 'arp_modo_anuncio_grupo', 'arp_modo_anuncio_activado', array('default' => 'on') );
+    register_setting( 'arp_modo_anuncio_grupo', 'arp_modo_anuncio_tipo', array('default' => array('popup', 'sticky', 'interstitial', 'inarticle')) );
     register_setting( 'arp_modo_anuncio_grupo', 'arp_modo_anuncio_lugar' );
     register_setting( 'arp_modo_anuncio_grupo', 'arp_modo_sticky_lugar' );
     register_setting( 'arp_modo_anuncio_grupo', 'arp_modo_interstitial_lugar' );
@@ -804,7 +838,7 @@ function arp_campo_config_callback( $args ) {
 
 // Nuevos callbacks para el modo anuncio
 function arp_campo_modo_activado_callback() {
-    $activado = get_option('arp_modo_anuncio_activado', 'off');
+    $activado = get_option('arp_modo_anuncio_activado', 'on');
     ?>
     <label>
         <input type="checkbox" name="arp_modo_anuncio_activado" value="on" <?php checked($activado, 'on'); ?>>
@@ -815,7 +849,7 @@ function arp_campo_modo_activado_callback() {
 }
 
 function arp_campo_modo_tipo_callback() {
-    $tipos = get_option('arp_modo_anuncio_tipo', array('popup'));
+    $tipos = arp_obtener_tipos_modo_anuncio();
     if (!is_array($tipos)) {
         $tipos = array($tipos);
     }
@@ -836,7 +870,7 @@ function arp_campo_modo_tipo_callback() {
         <input type="checkbox" name="arp_modo_anuncio_tipo[]" value="inarticle" <?php checked(in_array('inarticle', $tipos), true); ?>>
         Anuncio In-Article (En medio del contenido)
     </label>
-    <p class="description">Puede seleccionar varios modos para que funcionen simultáneamente.</p>
+    <p class="description">Puede seleccionar varios modos. Cada lugar especial (Pop-up, Sticky, Interstitial o In-Article) también activa automáticamente su modo cuando tiene un anuncio publicado.</p>
     <?php
 }
 
@@ -1290,13 +1324,13 @@ add_shortcode( 'anuncio_sticky', 'arp_shortcode_sticky' );
 // =========================================================================
 function arp_implementar_modo_anuncio() {
     // Verificar si el modo anuncio está activado
-    $modo_activado = get_option('arp_modo_anuncio_activado', 'off');
+    $modo_activado = get_option('arp_modo_anuncio_activado', 'on');
     if ($modo_activado !== 'on') {
         return;
     }
 
     // Obtener configuración
-    $tipos = get_option('arp_modo_anuncio_tipo', array('popup'));
+    $tipos = arp_obtener_tipos_modo_anuncio();
     if (!is_array($tipos)) {
         $tipos = array($tipos);
     }
@@ -1343,7 +1377,7 @@ function arp_implementar_modo_anuncio() {
         $alto = get_option('arp_modo_popup_alto', '400') . 'px';
         
         // Obtener anuncios válidos para el lugar seleccionado (popup)
-        $anuncios_validos = arp_obtener_anuncios_validos($lugar);
+        $anuncios_validos = arp_obtener_anuncios_para_modo($lugar, 'lugar_popup');
         
         if (!empty($anuncios_validos)) {
             // Aplicar rotación por refresco si está activada
@@ -1383,7 +1417,7 @@ function arp_implementar_modo_anuncio() {
         $alto = get_option('arp_modo_sticky_alto', '100') . 'px';
         
         // Obtener anuncios válidos para el lugar seleccionado (sticky)
-        $anuncios_validos = arp_obtener_anuncios_validos($lugar);
+        $anuncios_validos = arp_obtener_anuncios_para_modo($lugar, 'lugar_sticky_footer');
         
         if (!empty($anuncios_validos)) {
             // Aplicar rotación por refresco si está activada
@@ -1420,7 +1454,7 @@ function arp_implementar_modo_anuncio() {
         $lugar = get_option('arp_modo_interstitial_lugar', 'lugar_interstitial');
         
         // Obtener anuncios válidos para el lugar seleccionado (interstitial)
-        $anuncios_validos = arp_obtener_anuncios_validos($lugar);
+        $anuncios_validos = arp_obtener_anuncios_para_modo($lugar, 'lugar_interstitial');
         
         if (!empty($anuncios_validos)) {
             // Aplicar rotación por refresco si está activada
@@ -1467,13 +1501,13 @@ function arp_insertar_anuncio_inarticle($content) {
     }
     
     // Verificar si el modo anuncio está activado
-    $modo_activado = get_option('arp_modo_anuncio_activado', 'off');
+    $modo_activado = get_option('arp_modo_anuncio_activado', 'on');
     if ($modo_activado !== 'on') {
         return $content;
     }
     
     // Verificar si el modo inarticle está activado
-    $tipos = get_option('arp_modo_anuncio_tipo', array('popup'));
+    $tipos = arp_obtener_tipos_modo_anuncio();
     if (!is_array($tipos)) {
         $tipos = array($tipos);
     }
@@ -1488,7 +1522,7 @@ function arp_insertar_anuncio_inarticle($content) {
     $ancho = get_option('arp_modo_inarticle_ancho', '300') . 'px';
     $alto = get_option('arp_modo_inarticle_alto', '250') . 'px';
     
-    $anuncios_validos = arp_obtener_anuncios_validos($lugar);
+    $anuncios_validos = arp_obtener_anuncios_para_modo($lugar, 'lugar_inarticle');
     
     if (empty($anuncios_validos)) {
         return $content;
@@ -1668,9 +1702,9 @@ function arp_agregar_scripts_y_estilos() {
     wp_add_inline_script( 'arp-inline-js', $js );
     
     // JavaScript para el modo anuncio (popup/sticky/interstitial/inarticle)
-    $modo_activado = get_option('arp_modo_anuncio_activado', 'off');
+    $modo_activado = get_option('arp_modo_anuncio_activado', 'on');
     if ($modo_activado === 'on') {
-        $tipos = get_option('arp_modo_anuncio_tipo', array('popup'));
+        $tipos = arp_obtener_tipos_modo_anuncio();
         if (!is_array($tipos)) {
             $tipos = array($tipos);
         }
